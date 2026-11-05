@@ -1,0 +1,34 @@
+# Maintainer: fr3on <ahmed@0x200.com>
+pkgname=polaris-widget
+_name=polaris
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Transparent desktop widget that shows your Linux machine's health in plain words"
+arch=('any')
+url='https://github.com/fr3on/polaris'
+license=('MIT')
+depends=('conky' 'python' 'libx11' 'nvme-cli' 'python-gobject' 'gtk4' 'libadwaita')
+optdepends=('lm_sensors: temperature and fan drivers'
+            'polkit: one-click disk health setup in the settings window'
+            'xorg-xrandr: pick the right monitor when fitting the widget to the screen')
+conflicts=('polaris')
+install=polaris-widget.install
+source=("$_name-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('3cf3a7328a421e1b3da69edc956ae2beed1559383a683610cec72452266026c8')
+
+package() {
+  cd "$_name-$pkgver"
+  install -Dm755 src/polaris "$pkgdir/usr/bin/polaris"
+  install -Dm755 src/polaris-settings "$pkgdir/usr/bin/polaris-settings"
+  install -Dm644 src/conky.conf "$pkgdir/usr/share/polaris/conky.conf"
+  install -Dm644 src/rings.lua "$pkgdir/usr/share/polaris/rings.lua"
+  install -Dm755 src/polaris-smart "$pkgdir/usr/lib/polaris/polaris-smart"
+  sed 's#/usr/libexec/polaris#/usr/lib/polaris#' src/polaris-smart.service > polaris-smart.service
+  install -Dm644 polaris-smart.service "$pkgdir/usr/lib/systemd/system/polaris-smart.service"
+  install -Dm644 src/polaris-smart.timer "$pkgdir/usr/lib/systemd/system/polaris-smart.timer"
+  install -Dm644 src/polaris-app.desktop "$pkgdir/usr/share/applications/polaris.desktop"
+  install -Dm644 src/polaris.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/polaris.svg"
+  install -Dm644 src/polaris.desktop "$pkgdir/etc/xdg/autostart/polaris.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

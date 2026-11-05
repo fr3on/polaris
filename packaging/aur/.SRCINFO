@@ -1,0 +1,23 @@
+pkgbase = polaris-widget
+	pkgdesc = Transparent desktop widget that shows your Linux machine's health in plain words
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/fr3on/polaris
+	install = polaris-widget.install
+	arch = any
+	license = MIT
+	depends = conky
+	depends = python
+	depends = libx11
+	depends = nvme-cli
+	depends = python-gobject
+	depends = gtk4
+	depends = libadwaita
+	optdepends = lm_sensors: temperature and fan drivers
+	optdepends = polkit: one-click disk health setup in the settings window
+	optdepends = xorg-xrandr: pick the right monitor when fitting the widget to the screen
+	conflicts = polaris
+	source = polaris-1.0.0.tar.gz::https://github.com/fr3on/polaris/archive/refs/tags/v1.0.0.tar.gz
+	sha256sums = 3cf3a7328a421e1b3da69edc956ae2beed1559383a683610cec72452266026c8
+
+pkgname = polaris-widget

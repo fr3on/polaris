@@ -1,0 +1,9 @@
+post_install() {
+  echo "Polaris installed. Open it from your app menu, or run: polaris"
+  echo "For disk health, press Set up in Polaris settings, or run:"
+  echo "  sudo systemctl enable --now polaris-smart.timer"
+}
+
+post_upgrade() {
+  post_install
+}
