@@ -41,6 +41,22 @@ sudo dnf copr enable fr3on/polaris
 sudo dnf install polaris
 ```
 
+### Ubuntu and Debian (.deb)
+
+Download `polaris-widget_*_all.deb` from the [latest release](https://github.com/fr3on/polaris/releases/latest), then:
+
+```bash
+sudo apt install ./polaris-widget_1.0.0-1_all.deb     # apt installs the dependencies for you
+```
+
+The widget works on any current Ubuntu or Debian. The settings window needs libadwaita 1.4 or newer (Ubuntu 24.04 or Debian 13 and later); on older releases the widget still runs and you can change settings in `~/.config/polaris/settings.conf`.
+
+### Arch (manual, until the AUR package is live)
+
+```bash
+git clone https://github.com/fr3on/polaris && cd polaris/packaging/aur && makepkg -si
+```
+
 ### Any other distro (Debian, Ubuntu, Arch, openSUSE)
 
 ```bash
