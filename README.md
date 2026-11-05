@@ -1,5 +1,7 @@
 # Polaris
 
+[![Copr build status](https://copr.fedorainfracloud.org/coprs/fr3on/polaris/package/polaris/status_image/last_build.png)](https://copr.fedorainfracloud.org/coprs/fr3on/polaris/package/polaris/)
+
 <p align="center"><img src="docs/screenshot.png" alt="Polaris widget: health score, usage, power, network, storage, thermals and insights" width="900"></p>
 
 **See how your Linux machine is doing at a glance.** Polaris is a transparent widget that sits on your desktop and tells you in plain words if everything is fine, and what needs attention if it is not.
