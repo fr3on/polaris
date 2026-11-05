@@ -32,6 +32,13 @@ git clone https://github.com/fr3on/polaris && cd polaris
 sudo dnf install ./out/polaris-*.rpm        # dnf installs the dependencies for you
 ```
 
+### Fedora (COPR)
+
+```bash
+sudo dnf copr enable fr3on/polaris
+sudo dnf install polaris
+```
+
 ### Any other distro (Debian, Ubuntu, Arch, openSUSE)
 
 ```bash
