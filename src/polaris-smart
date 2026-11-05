@@ -1,0 +1,7 @@
+#!/bin/sh
+# Writes the NVMe health log where the widget (running as a normal user) can read it.
+dev=$(ls /dev/nvme[0-9]*n1 2>/dev/null | head -1)
+[ -n "$dev" ] || exit 0
+nvme smart-log "$dev" > /run/polaris-smart.tmp 2>/dev/null || exit 0
+chmod 644 /run/polaris-smart.tmp
+mv /run/polaris-smart.tmp /run/polaris-smart

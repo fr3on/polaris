@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""Polaris settings window (GTK4 + libadwaita). Open with `polaris --settings` or from the app menu."""
+import os, shutil, subprocess, sys
+
+try:
+    import gi
+    gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1')
+    from gi.repository import Adw, Gdk, GLib, Gtk
+except Exception:
+    sys.exit('The settings window needs GTK 4 and libadwaita with the Python bindings.\n'
+             '  Fedora: sudo dnf install python3-gobject gtk4 libadwaita\n'
+             '  Debian/Ubuntu: sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1\n'
+             '  Arch: sudo pacman -S python-gobject gtk4 libadwaita')
+
+HOME = os.path.expanduser('~')
+CONF = HOME + '/.config/polaris'; os.makedirs(CONF, exist_ok=True)
+SET, REF, SCALE, POS = CONF + '/settings.conf', CONF + '/refresh', CONF + '/scale', CONF + '/position'
+AUTOSTART = HOME + '/.config/autostart/polaris.desktop'
+REPO = 'https://github.com/fr3on/polaris'
+
+DEFAULTS = {'unit': 'C', 'show_power': '1', 'show_network': '1', 'show_storage': '1', 'show_thermals': '1',
+            'show_insights': '1', 'show_backup': '1', 'temp_warn': '75', 'temp_hot': '85', 'nvme_warn': '70',
+            'disk_warn': '80', 'disk_hot': '90', 'ram_warn': '80', 'ram_hot': '90', 'update_days': '30'}
+
+def here(name):
+    p = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
+    return p if os.path.exists(p) else (shutil.which(name) or name)
+
+def load():
+    s = dict(DEFAULTS)
+    try:
+        for line in open(SET):
+            if '=' in line:
+                k, v = line.strip().split('=', 1)
+                if k in s: s[k] = v
+    except OSError:
+        pass
+    return s
+
+def save(s):
+    tmp = SET + '.tmp'
+    with open(tmp, 'w') as f:
+        for k in DEFAULTS: f.write('%s=%s\n' % (k, s[k]))
+    os.replace(tmp, SET)
+
+def read_num(path, default):
+    try: return float(open(path).read().split()[0])
+    except Exception: return default
+
+def reload_widget():
+    # the launcher reloads conky when the refresh file changes
+    if not os.path.exists(REF): open(REF, 'w').write('2\n')
+    else: os.utime(REF, None)
+
+def autostart_on():
+    try:
+        txt = open(AUTOSTART).read()
+        return 'Hidden=true' not in txt
+    except OSError:
+        return os.path.exists('/etc/xdg/autostart/polaris.desktop')
+
+def set_autostart(on):
+    os.makedirs(os.path.dirname(AUTOSTART), exist_ok=True)
+    exe = shutil.which('polaris') or here('polaris')
+    with open(AUTOSTART, 'w') as f:
+        f.write('[Desktop Entry]\nType=Application\nName=Polaris\nExec=%s\nX-GNOME-Autostart-Delay=5\nTerminal=false\n%s' % (exe, '' if on else 'Hidden=true\n'))
+
+SMART_FILE = '/run/polaris-smart'
+def has_nvme(): return os.path.exists('/sys/class/nvme/nvme0')
+def smart_working():
+    try: return bool(open(SMART_FILE).read().strip())
+    except OSError: return False
+
+def setup_command():
+    # one root command: install the little collector if the package did not, then start its timer
+    units = here('polaris-smart')
+    d = os.path.dirname(units) if os.path.isabs(units) else ''
+    script = ('set -e; '
+              'if [ ! -e /etc/systemd/system/polaris-smart.timer ] && [ ! -e /usr/lib/systemd/system/polaris-smart.timer ]; then '
+              'install -Dm755 "%(d)s/polaris-smart" /usr/libexec/polaris/polaris-smart; '
+              'install -Dm644 "%(d)s/polaris-smart.service" /etc/systemd/system/polaris-smart.service; '
+              'install -Dm644 "%(d)s/polaris-smart.timer" /etc/systemd/system/polaris-smart.timer; '
+              'systemctl daemon-reload; fi; '
+              'systemctl enable --now polaris-smart.timer; '
+              'systemctl start polaris-smart.service || true') % {'d': d}
+    return ['pkexec', 'sh', '-c', script]
+
+ASKED = CONF + '/smart_asked'
+def ask_permission(parent, on_allow, on_later=None):
+    body = ('To show your disk health and wear, Polaris installs a small background job that reads the disk status '
+            'every 15 minutes. It needs administrator permission once, and only reads the status. Allow it?')
+    if hasattr(Adw, 'AlertDialog'):
+        d = Adw.AlertDialog(heading='Allow disk health checks?', body=body)
+        d.add_response('later', 'Not now'); d.add_response('allow', 'Allow')
+        d.set_response_appearance('allow', Adw.ResponseAppearance.SUGGESTED); d.set_default_response('allow'); d.set_close_response('later')
+        d.connect('response', lambda _d, r: on_allow() if r == 'allow' else (on_later() if on_later else None))
+        d.present(parent)
+    else:
+        d = Adw.MessageDialog(transient_for=parent, heading='Allow disk health checks?', body=body)
+        d.add_response('later', 'Not now'); d.add_response('allow', 'Allow')
+        d.set_response_appearance('allow', Adw.ResponseAppearance.SUGGESTED); d.set_default_response('allow'); d.set_close_response('later')
+        d.connect('response', lambda _d, r: on_allow() if r == 'allow' else (on_later() if on_later else None))
+        d.present()
+
+def version():
+    try: return subprocess.run([here('polaris'), '--version'], capture_output=True, text=True, timeout=5).stdout.split()[-1]
+    except Exception: return '1.0.0'
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id='com.github.fr3on.polaris')
+        self.cfg = load()
+        self._timer = None
+        self.smart_setup = None
+
+    def do_activate(self):
+        self.ensure_widget()
+        if self.props.active_window:
+            self.props.active_window.present(); return
+        win = Adw.ApplicationWindow(application=self, title='Polaris settings', default_width=560, default_height=640)
+        stack = Adw.ViewStack()
+        stack.add_titled_with_icon(self.general_page(), 'general', 'General', 'preferences-system-symbolic')
+        stack.add_titled_with_icon(self.sections_page(), 'sections', 'Sections', 'view-list-symbolic')
+        stack.add_titled_with_icon(self.alerts_page(), 'alerts', 'Alerts', 'dialog-warning-symbolic')
+        stack.add_titled_with_icon(self.about_page(), 'about', 'About', 'help-about-symbolic')
+        header = Adw.HeaderBar()
+        switcher = Adw.ViewSwitcher(stack=stack, policy=Adw.ViewSwitcherPolicy.WIDE)
+        header.set_title_widget(switcher)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(header); stack.set_vexpand(True); box.append(stack)
+        win.set_content(box); win.present()
+        self.win = win
+        if has_nvme() and not smart_working() and not os.path.exists(ASKED):
+            def first_ask():
+                open(ASKED, 'w').write('1\n')              # ask only once on its own; the button stays available
+                self.smart_setup and ask_permission(win, self.smart_setup)
+                return False
+            GLib.timeout_add(900, first_ask)
+
+    def ensure_widget(self):
+        # opening Polaris also makes sure the widget is on the desktop (a second copy never starts)
+        try: subprocess.Popen([here('polaris')], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError: pass
+
+    # ---------- helpers
+    def put(self, key, value):
+        self.cfg[key] = str(value); save(self.cfg)
+
+    def switch_row(self, title, subtitle, key):
+        row = Adw.SwitchRow(title=title, subtitle=subtitle)
+        row.set_active(self.cfg[key] == '1')
+        row.connect('notify::active', lambda r, _p: self.put(key, '1' if r.get_active() else '0'))
+        return row
+
+    def spin_row(self, title, subtitle, key, lo, hi, suffix=''):
+        row = Adw.SpinRow.new_with_range(lo, hi, 1)
+        row.set_title(title); row.set_subtitle(subtitle); row.set_value(float(self.cfg[key]))
+        row.connect('notify::value', lambda r, _p: self.put(key, int(r.get_value())))
+        return row
+
+    def scale_row(self, title, subtitle, lo, hi, step, value, fmt, apply):
+        row = Adw.ActionRow(title=title, subtitle=subtitle)
+        label = Gtk.Label(label=fmt(value), width_chars=6, xalign=1)
+        sc = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, lo, hi, step)
+        sc.set_value(value); sc.set_size_request(200, -1); sc.set_valign(Gtk.Align.CENTER); sc.set_draw_value(False)
+        def changed(s):
+            v = s.get_value(); label.set_text(fmt(v))
+            if self._timer: GLib.source_remove(self._timer)
+            self._timer = GLib.timeout_add(700, lambda: (apply(v), setattr(self, '_timer', None), False)[-1])
+        sc.connect('value-changed', changed)
+        row.add_suffix(sc); row.add_suffix(label)
+        return row
+
+    def page(self, title, icon, *groups):
+        p = Adw.PreferencesPage(title=title, icon_name=icon)
+        for g in groups: p.add(g)
+        return p
+
+    # ---------- pages
+    def general_page(self):
+        g = Adw.PreferencesGroup(title='Look and speed')
+        def raw_scale():
+            try: return open(SCALE).read().strip().lower() or 'auto'
+            except OSError: return 'auto'
+        def apply_size(v):
+            open(SCALE, 'w').write('%d\n' % round(v))
+        def apply_rate(v):
+            open(REF, 'w').write('%g\n' % round(v))
+        is_auto = raw_scale() == 'auto'
+        auto = Adw.SwitchRow(title='Fit the display automatically', subtitle='Picks a size that suits your screen and keeps the whole widget visible')
+        auto.set_active(is_auto)
+        try: cur = float(raw_scale())
+        except ValueError: cur = 100.0
+        size_row = self.scale_row('Size', 'Used when automatic fit is off', 50, 200, 5, cur, lambda v: '%d%%' % round(v), apply_size)
+        size_row.set_sensitive(not is_auto)
+        def toggle_auto(r, _p):
+            on = r.get_active(); size_row.set_sensitive(not on)
+            open(SCALE, 'w').write('auto\n' if on else '%d\n' % round(cur))
+        auto.connect('notify::active', toggle_auto)
+        g.add(auto); g.add(size_row)
+        g.add(self.scale_row('Update speed', 'Seconds between refreshes', 1, 60, 1, read_num(REF, 2), lambda v: '%d s' % round(v), apply_rate))
+        unit = Adw.ComboRow(title='Temperature unit'); unit.set_model(Gtk.StringList.new(['Celsius (°C)', 'Fahrenheit (°F)']))
+        unit.set_selected(0 if self.cfg['unit'] == 'C' else 1)
+        unit.connect('notify::selected', lambda r, _p: self.put('unit', 'C' if r.get_selected() == 0 else 'F'))
+        g.add(unit)
+        g2 = Adw.PreferencesGroup(title='Behavior')
+        auto = Adw.SwitchRow(title='Start at login', subtitle='Show the widget when you log in'); auto.set_active(autostart_on())
+        auto.connect('notify::active', lambda r, _p: set_autostart(r.get_active()))
+        g2.add(auto)
+        pos = Adw.ActionRow(title='Position', subtitle='Drag the widget with Super + left mouse button')
+        b = Gtk.Button(label='Reset', valign=Gtk.Align.CENTER)
+        def reset(_b):
+            try: os.remove(POS)
+            except FileNotFoundError: pass
+            reload_widget()
+        b.connect('clicked', reset); pos.add_suffix(b); g2.add(pos)
+        rl = Adw.ActionRow(title='Widget', subtitle='Reload the widget, or start it if it is not running')
+        b2 = Gtk.Button(label='Reload', valign=Gtk.Align.CENTER)
+        def reload_or_start(_b):
+            reload_widget()
+            if subprocess.run(['pgrep', '-x', 'conky'], capture_output=True).returncode != 0:
+                subprocess.Popen([here('polaris')], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        b2.connect('clicked', reload_or_start); rl.add_suffix(b2); g2.add(rl)
+        groups = [g, g2]
+        if has_nvme():
+            g3 = Adw.PreferencesGroup(title='Disk health', description='Reading the health of an NVMe disk needs permission once.')
+            row = Adw.ActionRow(title='NVMe health and wear')
+            btn = Gtk.Button(valign=Gtk.Align.CENTER)
+            def refresh():
+                if smart_working():
+                    row.set_subtitle('Working. Updates every 15 minutes.'); btn.set_label('Working'); btn.set_sensitive(False)
+                else:
+                    row.set_subtitle('Not set up yet. You will be asked for your password once.'); btn.set_label('Set up'); btn.set_sensitive(True)
+            def do_setup():
+                if not shutil.which('pkexec'):
+                    row.set_subtitle('Needs polkit (pkexec). Install it, or run: sudo systemctl enable --now polaris-smart.timer'); return
+                btn.set_sensitive(False); btn.set_label('Waiting...'); row.set_subtitle('Waiting for permission...')
+                p = subprocess.Popen(setup_command(), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                def poll():
+                    if p.poll() is None: return True
+                    if p.returncode == 0 and not smart_working():
+                        GLib.timeout_add(1500, lambda: (refresh(), False)[-1])
+                    elif p.returncode != 0:
+                        err = (p.stderr.read() or b'').decode().strip()
+                        if 'authentication agent' in err or '/dev/tty' in err:
+                            msg = 'No password prompt is available for this window. Open Polaris from the app menu, or run in a terminal: sudo systemctl enable --now polaris-smart.timer'
+                        elif p.returncode in (126, 127) or 'dismissed' in err.lower() or 'not authorized' in err.lower():
+                            msg = 'Permission was not given. Press Set up to try again.'
+                        else:
+                            msg = 'Could not set up (' + (err.splitlines()[-1] if err else 'code %d' % p.returncode) + ')'
+                        row.set_subtitle(msg); btn.set_label('Try again'); btn.set_sensitive(True)
+                    else: refresh()
+                    return False
+                GLib.timeout_add(500, poll)
+            self.smart_setup = do_setup
+            btn.connect('clicked', lambda _b: ask_permission(self.win, do_setup))
+            row.add_suffix(btn); g3.add(row); refresh(); groups.append(g3)
+        return self.page('General', 'preferences-system-symbolic', *groups)
+
+    def sections_page(self):
+        g = Adw.PreferencesGroup(title='Show these sections', description='The header and Usage are always shown.')
+        for title, sub, key in [('Power', 'CPU and GPU watts', 'show_power'), ('Network', 'Graph, rates and totals', 'show_network'),
+                                ('Storage', 'Disk bar, used and free', 'show_storage'), ('Thermals and fans', 'Temperatures and fan speeds', 'show_thermals'),
+                                ('Insights', 'Updates, reboot, services, disk health, trends', 'show_insights'),
+                                ('Last backup row', 'Needs your backup job to run: touch ~/.last-backup', 'show_backup')]:
+            g.add(self.switch_row(title, sub, key))
+        return self.page('Sections', 'view-list-symbolic', g)
+
+    def alerts_page(self):
+        g = Adw.PreferencesGroup(title='Temperatures', description='Warm turns the score amber. Hot turns it red.')
+        g.add(self.spin_row('CPU and GPU warm at (°C)', 'Default 75', 'temp_warn', 40, 100))
+        g.add(self.spin_row('CPU and GPU hot at (°C)', 'Default 85', 'temp_hot', 50, 110))
+        g.add(self.spin_row('NVMe warm at (°C)', 'Default 70', 'nvme_warn', 40, 100))
+        g2 = Adw.PreferencesGroup(title='Space and memory')
+        g2.add(self.spin_row('Disk warm at (%)', 'Default 80', 'disk_warn', 50, 99))
+        g2.add(self.spin_row('Disk hot at (%)', 'Default 90', 'disk_hot', 51, 100))
+        g2.add(self.spin_row('Memory warm at (%)', 'Default 80', 'ram_warn', 50, 99))
+        g2.add(self.spin_row('Memory hot at (%)', 'Default 90', 'ram_hot', 51, 100))
+        g3 = Adw.PreferencesGroup(title='Updates')
+        g3.add(self.spin_row('Warn after days without an update', 'Default 30', 'update_days', 7, 365))
+        return self.page('Alerts', 'dialog-warning-symbolic', g, g2, g3)
+
+    def about_page(self):
+        top = Adw.PreferencesGroup()
+        head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin_top=12, margin_bottom=12)
+        t = Gtk.Label(label='Polaris'); t.add_css_class('title-1')
+        s = Gtk.Label(label="Shows your Linux machine's health in plain words."); s.add_css_class('dim-label')
+        head.append(t); head.append(s); top.add(head)
+        info = Adw.PreferencesGroup()
+        for title, val in [('Version', version()), ('Author', 'fr3on'), ('License', 'MIT')]:
+            r = Adw.ActionRow(title=title); lab = Gtk.Label(label=val); lab.add_css_class('dim-label'); r.add_suffix(lab); info.add(r)
+        src = Adw.ActionRow(title='Source code', subtitle=REPO, activatable=True)
+        src.add_suffix(Gtk.Image.new_from_icon_name('adw-external-link-symbolic'))
+        src.connect('activated', lambda _r: subprocess.Popen(['xdg-open', REPO]))
+        info.add(src)
+        chk = Adw.PreferencesGroup(title='This machine', description='Checks what Polaris found and what is missing.')
+        buf = Gtk.TextBuffer(); view = Gtk.TextView(buffer=buf, editable=False, monospace=True, top_margin=8, bottom_margin=8, left_margin=10, right_margin=10)
+        view.set_size_request(-1, 190)
+        sw = Gtk.ScrolledWindow(child=view, min_content_height=190); sw.add_css_class('card')
+        def run(_b=None):
+            r = subprocess.run([here('polaris'), '--doctor'], capture_output=True, text=True)
+            buf.set_text((r.stdout or r.stderr).strip())
+        def copy(_b):
+            a, b = buf.get_bounds(); Gdk.Display.get_default().get_clipboard().set(buf.get_text(a, b, False))
+        bar = Gtk.Box(spacing=8, halign=Gtk.Align.END, margin_top=8)
+        rb = Gtk.Button(label='Run check'); rb.connect('clicked', run)
+        cb = Gtk.Button(label='Copy report'); cb.connect('clicked', copy)
+        bar.append(rb); bar.append(cb)
+        holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL); holder.append(sw); holder.append(bar); chk.add(holder)
+        GLib.idle_add(run)
+        return self.page('About', 'help-about-symbolic', top, info, chk)
+
+if __name__ == '__main__':
+    sys.exit(App().run(None))

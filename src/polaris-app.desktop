@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Polaris
+GenericName=System dashboard
+Comment=Settings for the Polaris desktop widget, and start it
+Exec=/usr/bin/polaris-settings
+Icon=polaris
+Categories=System;Monitor;
+Keywords=polaris;system;monitor;widget;health;temperature;conky;settings;
+Terminal=false
+StartupNotify=true

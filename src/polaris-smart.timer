@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh NVMe health for the polaris widget
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

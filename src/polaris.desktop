@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=polaris
+Comment=Shows your machine's health in plain words
+Exec=/usr/bin/polaris
+X-GNOME-Autostart-Delay=5
+Terminal=false

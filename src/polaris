@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Starts the polaris desktop widget where you last left it. Drag it with Super + left mouse button; the new spot is saved a few seconds later.
+   polaris            start (and keep saving the position)
+   polaris --reset    forget the saved position (top-right corner again)
+   polaris --move X Y move the running widget (for testing)
+   polaris --refresh N  update every N seconds (1 to 60); the widget reloads by itself
+   polaris --refresh    show the current setting
+   polaris --doctor        check dependencies and what was detected on this machine
+   polaris --size N   scale the widget, N percent (50 to 200); --size alone shows it"""
+import ctypes, ctypes.util, fcntl, os, shutil, subprocess, sys, time
+
+def data_dir():
+    cands = [os.environ.get('POLARIS_DIR'),
+             os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), 'share', 'polaris'),
+             '/usr/local/share/polaris', '/usr/share/polaris']
+    for c in cands:
+        if c and os.path.exists(os.path.join(c, 'rings.lua')): return c
+    return cands[-1]
+
+HOME = os.path.expanduser('~'); os.makedirs(HOME + '/.config/polaris', exist_ok=True); POS = HOME + '/.config/polaris/position'; REF = HOME + '/.config/polaris/refresh'; CLASS = b'polaris'
+X = ctypes.CDLL(ctypes.util.find_library('X11') or 'libX11.so.6')
+Win = ctypes.c_ulong; VP = ctypes.c_void_p
+X.XOpenDisplay.restype = VP; X.XOpenDisplay.argtypes = [ctypes.c_char_p]
+X.XDefaultRootWindow.restype = Win; X.XDefaultRootWindow.argtypes = [VP]
+X.XQueryTree.argtypes = [VP, Win, ctypes.POINTER(Win), ctypes.POINTER(Win), ctypes.POINTER(ctypes.POINTER(Win)), ctypes.POINTER(ctypes.c_uint)]
+class Hint(ctypes.Structure): _fields_ = [('res_name', VP), ('res_class', VP)]
+X.XGetClassHint.argtypes = [VP, Win, ctypes.POINTER(Hint)]
+X.XTranslateCoordinates.argtypes = [VP, Win, Win, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(Win)]
+X.XMoveWindow.argtypes = [VP, Win, ctypes.c_int, ctypes.c_int]
+X.XFlush.argtypes = [VP]; X.XFree.argtypes = [VP]
+X.XDisplayWidth.restype = ctypes.c_int; X.XDisplayWidth.argtypes = [VP, ctypes.c_int]
+X.XDisplayHeight.restype = ctypes.c_int; X.XDisplayHeight.argtypes = [VP, ctypes.c_int]
+_DPY = [None]
+HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, VP, VP)(lambda d, e: 0)
+X.XSetErrorHandler(HANDLER)
+
+def is_ours(dpy, w):
+    h = Hint()
+    if not X.XGetClassHint(dpy, w, ctypes.byref(h)): return False
+    names = []
+    for p in (h.res_name, h.res_class):
+        if p: names.append(ctypes.string_at(p)); X.XFree(p)
+    return any(CLASS in n for n in names)
+
+def find(dpy, w, depth=0):
+    r, par, kids, n = Win(), Win(), ctypes.POINTER(Win)(), ctypes.c_uint()
+    if not X.XQueryTree(dpy, w, ctypes.byref(r), ctypes.byref(par), ctypes.byref(kids), ctypes.byref(n)): return None
+    found = None
+    for i in range(n.value):
+        c = kids[i]
+        if is_ours(dpy, c) or (depth < 2 and (found := find(dpy, c, depth + 1))): found = found or c; break
+    if kids: X.XFree(ctypes.cast(kids, VP))
+    return found
+
+def where(dpy, root, w):
+    x, y, ch = ctypes.c_int(), ctypes.c_int(), Win()
+    X.XTranslateCoordinates(dpy, w, root, 0, 0, ctypes.byref(x), ctypes.byref(y), ctypes.byref(ch))
+    return x.value, y.value
+
+def refresh():
+    try: return float(open(REF).read().split()[0])
+    except Exception: return 2.0
+
+def mtime():
+    try: return max(os.stat(REF).st_mtime, os.stat(SCALEF).st_mtime if os.path.exists(SCALEF) else 0)
+    except OSError: return 0
+
+def saved():
+    try: a, b = open(POS).read().split(); return int(a), int(b)
+    except Exception: return None
+
+VERSION = '1.0.0'
+EFF = HOME + '/.config/polaris/effective_scale'; HFILE = HOME + '/.config/polaris/height'; SCALEF = HOME + '/.config/polaris/scale'
+
+def screen_geom(pos):
+    """Width and height of the monitor the widget is on (falls back to the whole X screen)."""
+    out = ''
+    if shutil.which('xrandr'):
+        try: out = subprocess.run(['xrandr', '--listmonitors'], capture_output=True, text=True, timeout=3).stdout
+        except Exception: out = ''
+    mons = []
+    for line in out.splitlines()[1:]:
+        for tok in line.split():
+            if '/' in tok and 'x' in tok and '+' in tok:
+                try:
+                    w = int(tok.split('/')[0]); rest = tok.split('x', 1)[1]
+                    h = int(rest.split('/')[0]); x = int(tok.rsplit('+', 2)[1]); y = int(tok.rsplit('+', 2)[2])
+                    mons.append((x, y, w, h)); break
+                except Exception: pass
+    if mons:
+        if pos:
+            for x, y, w, h in mons:
+                if x <= pos[0] < x + w and y <= pos[1] < y + h: return w, h
+        return mons[0][2], mons[0][3]
+    if _DPY[0] is None: _DPY[0] = X.XOpenDisplay(None)
+    d = _DPY[0]
+    if d: return X.XDisplayWidth(d, 0), X.XDisplayHeight(d, 0)
+    return 1920, 1080
+
+def content_height():
+    try: return max(300, float(open(HFILE).read().split()[0]))
+    except Exception: return 1250.0
+
+def effective_scale(pos):
+    """Scale to draw at: the user's percent, or automatic (fit the monitor)."""
+    try: raw = open(SCALEF).read().strip().lower()
+    except OSError: raw = 'auto'
+    if raw not in ('', 'auto'):
+        try: return round(min(2.0, max(0.5, int(raw) / 100)), 2)
+        except ValueError: pass
+    w, h = screen_geom(pos)
+    fit = (h - 90) / content_height()          # the whole widget must fit the screen height
+    dpi = h / 1080.0                           # bigger screens get a bigger widget
+    return round(min(2.0, max(0.55, min(fit, dpi))), 2)
+
+def doctor():
+    ok = lambda m: print('  [ok]   ' + m)
+    warn = lambda m: print('  [warn] ' + m)
+    bad = lambda m: print('  [FAIL] ' + m)
+    print('polaris %s doctor (data: %s)' % (VERSION, data_dir()))
+    if shutil.which('conky'):
+        v = subprocess.run(['conky', '-v'], capture_output=True, text=True).stdout
+        ok('conky found')
+        (ok if 'cairo' in v.lower() else bad)('conky has Lua + Cairo support' if 'cairo' in v.lower() else 'conky was built without Lua/Cairo: install a full build (Debian/Ubuntu: conky-all)')
+    else:
+        bad('conky is not installed (dnf install conky | apt install conky-all | pacman -S conky)')
+    (ok if os.environ.get('DISPLAY') else warn)('X display (%s)' % (os.environ.get('DISPLAY') or 'not set: run inside the desktop session; Wayland works through XWayland'))
+    hw = [open('/sys/class/hwmon/%s/name' % d).read().strip() for d in sorted(os.listdir('/sys/class/hwmon'))] if os.path.isdir('/sys/class/hwmon') else []
+    cpu = [n for n in hw if n in ('k10temp', 'coretemp', 'zenpower', 'cpu_thermal')]
+    (ok if cpu else warn)('CPU temperature sensor: %s' % (cpu[0] if cpu else 'none (install lm_sensors and run sensors-detect)'))
+    fans = sum(1 for d in os.listdir('/sys/class/hwmon') for f in os.listdir('/sys/class/hwmon/' + d) if f.startswith('fan') and f.endswith('_input')) if hw else 0
+    (ok if fans else warn)('fans: %d found' % fans if fans else 'no fan sensors (board driver missing); the Fans row is hidden')
+    rt = [l.split()[0] for l in open('/proc/net/route').read().splitlines()[1:] if l.split()[1] == '00000000']
+    (ok if rt else warn)('network interface: %s' % (rt[0] if rt else 'no default route'))
+    (ok if shutil.which('nvidia-smi') else warn)('NVIDIA GPU: %s' % ('nvidia-smi found' if shutil.which('nvidia-smi') else 'not found; GPU rows are hidden'))
+    rapl = os.path.exists('/sys/class/powercap/intel-rapl:0/energy_uj')
+    (ok if rapl else warn)('CPU power (RAPL): %s' % ('available' if rapl else 'not exposed; the Power section shows GPU only or is hidden'))
+    nv = os.path.exists('/sys/class/nvme/nvme0')
+    if nv:
+        have = os.path.exists('/run/polaris-smart')
+        (ok if have else warn)('NVMe health: %s' % ('reading ok' if have else 'no data yet; enable the timer: sudo systemctl enable --now polaris-smart.timer'))
+        (ok if shutil.which('nvme') else bad)('nvme-cli %s' % ('found' if shutil.which('nvme') else 'missing (needed for NVMe health)'))
+    else:
+        ok('no NVMe disk; disk-health rows are hidden')
+    try:
+        import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Adw, Gtk
+        ok('settings window: GTK 4 and libadwaita found')
+    except Exception:
+        warn('settings window needs python3-gobject, gtk4 and libadwaita (polaris --settings will say how to install them)')
+    (ok if shutil.which('dnf') else warn)('update checks: %s' % ('dnf found' if shutil.which('dnf') else 'only dnf is supported; update rows are hidden'))
+
+def main():
+    if '--version' in sys.argv: print('polaris ' + VERSION); return
+    if '--settings' in sys.argv:
+        p = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'polaris-settings')
+        os.execv(sys.executable, [sys.executable, p if os.path.exists(p) else shutil.which('polaris-settings') or 'polaris-settings']); return
+    if '--doctor' in sys.argv: doctor(); return
+    if '--reset' in sys.argv:
+        try: os.remove(POS)
+        except FileNotFoundError: pass
+        print('position forgotten'); return
+    if '--size' in sys.argv:
+        i = sys.argv.index('--size')
+        if i + 1 >= len(sys.argv):
+            try: print('size %s' % (open(SCALEF).read().strip() or 'auto'))
+            except FileNotFoundError: print('size auto')
+            return
+        v = sys.argv[i + 1].lower()
+        if v != 'auto':
+            try: n = int(v)
+            except ValueError: sys.exit('give a percent (50 to 200) or auto, for example: polaris --size 80')
+            if not 50 <= n <= 200: sys.exit('choose between 50 and 200 percent, or auto')
+        with open(SCALEF, 'w') as f: f.write(('auto' if v == 'auto' else str(n)) + '\n')
+        print('size %s; the widget reloads within a few seconds' % v); return
+    if '--refresh' in sys.argv:
+        i = sys.argv.index('--refresh')
+        if i + 1 >= len(sys.argv): print('refresh every %g s' % refresh()); return
+        try: n = float(sys.argv[i + 1])
+        except ValueError: sys.exit('give a number of seconds, for example: polaris --refresh 5')
+        if not 1 <= n <= 60: sys.exit('choose between 1 and 60 seconds (faster than 1 s only adds load for no gain)')
+        with open(REF, 'w') as f: f.write('%g\n' % n)
+        print('refresh every %g s; the widget reloads within a few seconds' % n); return
+    dpy = X.XOpenDisplay(None)
+    if not dpy: sys.exit('no display: run this inside the desktop session')
+    root = X.XDefaultRootWindow(dpy)
+    if '--move' in sys.argv:
+        i = sys.argv.index('--move'); w = find(dpy, root)
+        if not w: sys.exit('widget not found')
+        X.XMoveWindow(dpy, w, int(sys.argv[i + 1]), int(sys.argv[i + 2])); X.XFlush(dpy); return
+    # only one widget at a time: a second start exits quietly
+    lock = open((os.environ.get('XDG_RUNTIME_DIR') or '/tmp') + '/polaris-%d.lock' % os.getuid(), 'w')
+    try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print('polaris is already running'); return
+    subprocess.run(['pkill', '-f', 'conky -c ' + data_dir() + '/conky.conf'], capture_output=True)   # leftover from a crash
+    time.sleep(float(os.environ.get('DELAY', '0')))
+    cur = [None, None]
+    def apply_scale():
+        k = effective_scale(saved()); h = content_height()
+        with open(EFF, 'w') as f: f.write('%.2f\n' % k)
+        return k, h
+    def start():
+        cur[0], cur[1] = apply_scale()
+        return subprocess.Popen(['conky', '-c', data_dir() + '/conky.conf'], env=dict(os.environ, POLARIS_DIR=data_dir()))
+    p = start(); seen = mtime(); last = saved(); tick = 0
+    while True:
+        time.sleep(1); tick += 1
+        if p.poll() is not None: return
+        if mtime() != seen:                      # refresh changed: reload with the new rate
+            seen = mtime(); p.terminate()
+            try: p.wait(5)
+            except subprocess.TimeoutExpired: p.kill()
+            p = start(); continue
+        if tick % 5 == 0:
+            k, h = effective_scale(saved()), content_height()
+            if abs(k - cur[0]) >= 0.02 or abs(h - cur[1]) >= 6:       # screen or content changed: refit
+                p.terminate()
+                try: p.wait(5)
+                except subprocess.TimeoutExpired: p.kill()
+                p = start(); seen = mtime(); continue
+        if tick % 5: continue
+        w = find(dpy, root)
+        if not w: continue
+        xy = where(dpy, root, w)
+        if xy != last and -4000 < xy[0] < 8000 and -200 < xy[1] < 6000:
+            with open(POS, 'w') as f: f.write('%d %d\n' % xy)
+            last = xy
+main()

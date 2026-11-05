@@ -1,0 +1,6 @@
+[Unit]
+Description=Collect NVMe health for the polaris widget
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/polaris/polaris-smart
