@@ -102,13 +102,15 @@ local function grouped(names)   -- {"B200","B200"} -> "2x B200"; mixed cards are
   return #out > 0 and table.concat(out, ' + ') or nil
 end
 local GPU_NAME = (function()
-  local p = io.popen('nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null'); if not p then return nil end
+  local p = io.popen('timeout 5 nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null'); if not p then return nil end
   local names = {}; for line in p:lines() do local l = line:gsub('NVIDIA ', ''):gsub('GeForce ', ''):gsub('%s+$', ''); if l ~= '' then names[#names + 1] = l end end; p:close()   -- Lua 5.4: a for-loop variable is read-only
   return grouped(names)
 end)()
 local HAS_DNF = os.execute('command -v dnf >/dev/null 2>&1') == true or os.execute('command -v dnf >/dev/null 2>&1') == 0
 local HAS_NVME = exists('/sys/class/nvme/nvme0/model')
-local RUN = os.getenv('XDG_RUNTIME_DIR') or '/tmp'
+local function q(s) return "'" .. (tostring(s):gsub("'", "'\\''")) .. "'" end   -- quote for the shell
+local RUN = os.getenv('XDG_RUNTIME_DIR') or ((os.getenv('HOME') or '') .. '/.cache/polaris')   -- never a shared /tmp: a planted symlink there could redirect the write
+if not os.getenv('XDG_RUNTIME_DIR') then os.execute('mkdir -p -m 700 ' .. q(RUN)) end
 local UPD = RUN .. '/polaris-upd'
 
 local function parse_gpus(lines)   -- "index, util, temp, mem used, mem total, power, limit" per line; "[N/A]" fields become nil
@@ -123,7 +125,7 @@ local gpus, gpu_t = {}, 0
 local function gpu_info()
   if os.time() - gpu_t >= 6 then
     gpu_t = os.time()
-    local p = io.popen('nvidia-smi --query-gpu=index,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit --format=csv,noheader,nounits 2>/dev/null')
+    local p = io.popen('timeout 5 nvidia-smi --query-gpu=index,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit --format=csv,noheader,nounits 2>/dev/null')
     if p then
       local list = parse_gpus(p:lines()); p:close()
       if #list > 0 then gpus = list end
@@ -191,7 +193,7 @@ local function sysinfo()
   local now = os.time()
   if now - SYS.t >= 3600 then
     SYS.t = now
-    if HAS_DNF then os.execute([[(u=$(dnf -q check-update 2>/dev/null | grep -c '^[A-Za-z0-9]'); s=$(dnf -q check-update --security 2>/dev/null | grep -c '^[A-Za-z0-9]'); k=$(rpm -q kernel --last 2>/dev/null | head -1 | awk '{print $1}' | sed 's/^kernel-//'); d=$(dnf history list 2>/dev/null | grep -E 'upgrade|update|daemon' | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}'); echo "$u $s $k $d" > ]] .. UPD .. [[.tmp && mv ]] .. UPD .. [[.tmp ]] .. UPD .. [[) >/dev/null 2>&1 &]]) end
+    if HAS_DNF then os.execute([[(u=$(dnf -q check-update 2>/dev/null | grep -c '^[A-Za-z0-9]'); s=$(dnf -q check-update --security 2>/dev/null | grep -c '^[A-Za-z0-9]'); k=$(rpm -q kernel --last 2>/dev/null | head -1 | awk '{print $1}' | sed 's/^kernel-//'); d=$(dnf history list 2>/dev/null | grep -E 'upgrade|update|daemon' | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}'); echo "$u $s $k $d" > ]] .. q(UPD .. '.tmp') .. [[ && mv ]] .. q(UPD .. '.tmp') .. [[ ]] .. q(UPD) .. [[) >/dev/null 2>&1 &]]) end
   end
   if now - SYS.ft >= 20 then
     SYS.ft = now
@@ -221,7 +223,7 @@ local function loadcfg()
   for k, v in pairs(CFGDEF) do CFG[k] = v end
   local f = io.open(os.getenv('HOME') .. '/.config/polaris/settings.conf', 'r')
   if f then
-    for l in f:lines() do local k, v = l:match('^([%w_]+)=(.*)$'); if k and CFGDEF[k] ~= nil then CFG[k] = tonumber(v) or v end end
+    for l in f:lines() do local k, v = l:match('^([%w_]+)=(.*)$'); if k and CFGDEF[k] ~= nil then if type(CFGDEF[k]) == 'number' then CFG[k] = tonumber(v) or CFGDEF[k] else CFG[k] = v end end end
     f:close()
   end
 end

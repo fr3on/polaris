@@ -53,8 +53,8 @@ run $SUDO install -Dm0644 "$here/src/polaris-smart.timer" /etc/systemd/system/po
 run $SUDO install -Dm0644 "$tmp/polaris.desktop" /etc/xdg/autostart/polaris.desktop
 run $SUDO install -Dm0644 "$tmp/polaris-app.desktop" /usr/share/applications/polaris.desktop
 run $SUDO install -Dm0644 "$here/src/polaris.svg" /usr/share/icons/hicolor/scalable/apps/polaris.svg
-command -v gtk-update-icon-cache >/dev/null 2>&1 \&\& run $SUDO gtk-update-icon-cache -q /usr/share/icons/hicolor || true
-command -v update-desktop-database >/dev/null 2>&1 \&\& run $SUDO update-desktop-database -q /usr/share/applications || true
+command -v gtk-update-icon-cache >/dev/null 2>&1 && run $SUDO gtk-update-icon-cache -q /usr/share/icons/hicolor || true
+command -v update-desktop-database >/dev/null 2>&1 && run $SUDO update-desktop-database -q /usr/share/applications || true
 rm -rf "$tmp"
 
 # 3. disk-health timer (only useful when an NVMe disk exists)

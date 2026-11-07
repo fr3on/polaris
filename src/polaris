@@ -7,7 +7,7 @@
    polaris --refresh    show the current setting
    polaris --doctor        check dependencies and what was detected on this machine
    polaris --size N   scale the widget, N percent (50 to 200); --size alone shows it"""
-import ctypes, ctypes.util, fcntl, os, shutil, subprocess, sys, time
+import ctypes, ctypes.util, fcntl, os, re, shutil, subprocess, sys, time
 
 def data_dir():
     cands = [os.environ.get('POLARIS_DIR'),
@@ -133,8 +133,8 @@ def doctor():
     rt = [l.split()[0] for l in open('/proc/net/route').read().splitlines()[1:] if l.split()[1] == '00000000']
     (ok if rt else warn)('network interface: %s' % (rt[0] if rt else 'no default route'))
     (ok if shutil.which('nvidia-smi') else warn)('NVIDIA GPU: %s' % ('nvidia-smi found' if shutil.which('nvidia-smi') else 'not found; GPU rows are hidden'))
-    rapl = os.path.exists('/sys/class/powercap/intel-rapl:0/energy_uj')
-    (ok if rapl else warn)('CPU power (RAPL): %s' % ('available' if rapl else 'not exposed; the Power section shows GPU only or is hidden'))
+    rf = '/sys/class/powercap/intel-rapl:0/energy_uj'
+    (ok if os.access(rf, os.R_OK) else warn)('CPU power (RAPL): %s' % ('available' if os.access(rf, os.R_OK) else ('present but only root can read it (kernel privacy rule); CPU watts are hidden' if os.path.exists(rf) else 'not exposed; the Power section shows GPU only or is hidden')))
     nv = os.path.exists('/sys/class/nvme/nvme0')
     if nv:
         have = os.path.exists('/run/polaris-smart')
@@ -188,11 +188,11 @@ def main():
         if not w: sys.exit('widget not found')
         X.XMoveWindow(dpy, w, int(sys.argv[i + 1]), int(sys.argv[i + 2])); X.XFlush(dpy); return
     # only one widget at a time: a second start exits quietly
-    lock = open((os.environ.get('XDG_RUNTIME_DIR') or '/tmp') + '/polaris-%d.lock' % os.getuid(), 'w')
+    lock = open((os.environ.get('XDG_RUNTIME_DIR') or (HOME + '/.config/polaris')) + '/polaris-%d.lock' % os.getuid(), 'w')   # not /tmp: a planted symlink there would be followed
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         print('polaris is already running'); return
-    subprocess.run(['pkill', '-f', 'conky -c ' + data_dir() + '/conky.conf'], capture_output=True)   # leftover from a crash
+    subprocess.run(['pkill', '-f', 'conky -c ' + re.escape(data_dir() + '/conky.conf')], capture_output=True)   # leftover from a crash
     time.sleep(float(os.environ.get('DELAY', '0')))
     cur = [None, None]
     def apply_scale():

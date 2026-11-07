@@ -32,7 +32,11 @@ def load():
         for line in open(SET):
             if '=' in line:
                 k, v = line.strip().split('=', 1)
-                if k in s: s[k] = v
+                if k in s:
+                    if DEFAULTS[k].isdigit():
+                        try: float(v)
+                        except ValueError: continue          # keep the default for a damaged number
+                    s[k] = v
     except OSError:
         pass
     return s
@@ -63,7 +67,7 @@ def set_autostart(on):
     os.makedirs(os.path.dirname(AUTOSTART), exist_ok=True)
     exe = shutil.which('polaris') or here('polaris')
     with open(AUTOSTART, 'w') as f:
-        f.write('[Desktop Entry]\nType=Application\nName=Polaris\nExec=%s\nX-GNOME-Autostart-Delay=5\nTerminal=false\n%s' % (exe, '' if on else 'Hidden=true\n'))
+        f.write('[Desktop Entry]\nType=Application\nName=Polaris\nExec=%s\nX-GNOME-Autostart-Delay=5\nTerminal=false\n%s' % ('"%s"' % exe if ' ' in exe else exe, '' if on else 'Hidden=true\n'))
 
 SMART_FILE = '/run/polaris-smart'
 def has_nvme(): return os.path.exists('/sys/class/nvme/nvme0')
@@ -71,19 +75,32 @@ def smart_working():
     try: return bool(open(SMART_FILE).read().strip())
     except OSError: return False
 
+def root_owned_dir(d):
+    """True when only root can change what is in d (the folder and every file we would copy as root)."""
+    try:
+        for p in [d] + [os.path.join(d, n) for n in ('polaris-smart', 'polaris-smart.service', 'polaris-smart.timer')]:
+            st = os.stat(p)
+            if st.st_uid != 0 or st.st_mode & 0o022: return False
+        return True
+    except OSError:
+        return False
+
 def setup_command():
-    # one root command: install the little collector if the package did not, then start its timer
+    # one root command: install the little collector if the package did not, then start its timer.
+    # Returns None when the files would have to be copied as root from a folder the user can write to.
     units = here('polaris-smart')
     d = os.path.dirname(units) if os.path.isabs(units) else ''
+    installed = os.path.exists('/etc/systemd/system/polaris-smart.timer') or os.path.exists('/usr/lib/systemd/system/polaris-smart.timer')
+    if not installed and not root_owned_dir(d): return None
     script = ('set -e; '
               'if [ ! -e /etc/systemd/system/polaris-smart.timer ] && [ ! -e /usr/lib/systemd/system/polaris-smart.timer ]; then '
-              'install -Dm755 "%(d)s/polaris-smart" /usr/libexec/polaris/polaris-smart; '
-              'install -Dm644 "%(d)s/polaris-smart.service" /etc/systemd/system/polaris-smart.service; '
-              'install -Dm644 "%(d)s/polaris-smart.timer" /etc/systemd/system/polaris-smart.timer; '
+              'install -Dm755 "$1/polaris-smart" /usr/libexec/polaris/polaris-smart; '
+              'install -Dm644 "$1/polaris-smart.service" /etc/systemd/system/polaris-smart.service; '
+              'install -Dm644 "$1/polaris-smart.timer" /etc/systemd/system/polaris-smart.timer; '
               'systemctl daemon-reload; fi; '
               'systemctl enable --now polaris-smart.timer; '
-              'systemctl start polaris-smart.service || true') % {'d': d}
-    return ['pkexec', 'sh', '-c', script]
+              'systemctl start polaris-smart.service || true')
+    return ['pkexec', 'sh', '-c', script, 'polaris-setup', d]
 
 ASKED = CONF + '/smart_asked'
 def ask_permission(parent, on_allow, on_later=None):
@@ -218,8 +235,7 @@ class App(Adw.Application):
         b2 = Gtk.Button(label='Reload', valign=Gtk.Align.CENTER)
         def reload_or_start(_b):
             reload_widget()
-            if subprocess.run(['pgrep', '-x', 'conky'], capture_output=True).returncode != 0:
-                subprocess.Popen([here('polaris')], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([here('polaris')], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)   # exits quietly when Polaris already runs
         b2.connect('clicked', reload_or_start); rl.add_suffix(b2); g2.add(rl)
         groups = [g, g2]
         if has_nvme():
@@ -234,8 +250,11 @@ class App(Adw.Application):
             def do_setup():
                 if not shutil.which('pkexec'):
                     row.set_subtitle('Needs polkit (pkexec). Install it, or run: sudo systemctl enable --now polaris-smart.timer'); return
+                cmd = setup_command()
+                if cmd is None:
+                    row.set_subtitle('Polaris runs from a folder you own, so it will not install a root job from there. Run ./install.sh from that folder (or install the package).'); return
                 btn.set_sensitive(False); btn.set_label('Waiting...'); row.set_subtitle('Waiting for permission...')
-                p = subprocess.Popen(setup_command(), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                 def poll():
                     if p.poll() is None: return True
                     if p.returncode == 0 and not smart_working():

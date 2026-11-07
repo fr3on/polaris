@@ -41,8 +41,8 @@ io.open = function(path, mode)
   return real_open(path, mode)
 end
 io.popen = function(cmd)
-  if cmd:match('^nvidia%-smi %-%-query%-gpu=name') then local t = {}; for i = 1, NGPU do t[i] = 'NVIDIA B200' end; return fake(NGPU > 0 and table.concat(t, '\n') .. '\n' or '') end
-  if cmd:match('^nvidia%-smi') then local t = {}; for i = 0, NGPU - 1 do t[#t + 1] = string.format('%d, %d, %d, 20000, 183359, 650.0, 1000', i, 99 - i, 60 + i * 3) end; return fake(table.concat(t, '\n') .. '\n') end
+  if cmd:match('nvidia%-smi %-%-query%-gpu=name') then local t = {}; for i = 1, NGPU do t[i] = 'NVIDIA B200' end; return fake(NGPU > 0 and table.concat(t, '\n') .. '\n' or '') end
+  if cmd:match('nvidia%-smi') then local t = {}; for i = 0, NGPU - 1 do t[#t + 1] = string.format('%d, %d, %d, 20000, 183359, 650.0, 1000', i, 99 - i, 60 + i * 3) end; return fake(table.concat(t, '\n') .. '\n') end
   return fake('')
 end
 os.execute = function() return 1 end
