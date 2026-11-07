@@ -103,7 +103,7 @@ local function grouped(names)   -- {"B200","B200"} -> "2x B200"; mixed cards are
 end
 local GPU_NAME = (function()
   local p = io.popen('nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null'); if not p then return nil end
-  local names = {}; for l in p:lines() do l = l:gsub('NVIDIA ', ''):gsub('GeForce ', ''):gsub('%s+$', ''); if l ~= '' then names[#names + 1] = l end end; p:close()
+  local names = {}; for line in p:lines() do local l = line:gsub('NVIDIA ', ''):gsub('GeForce ', ''):gsub('%s+$', ''); if l ~= '' then names[#names + 1] = l end end; p:close()   -- Lua 5.4: a for-loop variable is read-only
   return grouped(names)
 end)()
 local HAS_DNF = os.execute('command -v dnf >/dev/null 2>&1') == true or os.execute('command -v dnf >/dev/null 2>&1') == 0
