@@ -22,6 +22,8 @@ The score drops when something needs care (a hot part, a stopped fan, a failed s
 
 **Settings window and auto-fit.** Open *Polaris* from your app menu (or run `polaris --settings`) to change size, speed, °C or °F, which sections show, alert limits and start at login. The widget also sizes itself to your screen, so it always fits, from a laptop to a 4K monitor.
 
+**Several GPUs and CPUs.** Every NVIDIA card gets its own row for load, memory, temperature and power (from 9 cards up, Usage and Thermals show an average and the busiest or hottest card instead, so the widget stays short). Machines with more than one CPU socket show load, temperature and power per socket, with the total, and the footer reads like `2x EPYC 9654 · 192 threads · 8x B200`. The health score looks at the hottest part and the header names it (`GPU 3 is hot at 88°`).
+
 Nothing is hardcoded to one machine. Sensors, network interface, GPU, fans and disks are found automatically, and rows for hardware you do not have are hidden.
 
 ## Install

@@ -3,16 +3,17 @@ pcall(require, 'cairo_xlib')
 local unpack = table.unpack or unpack
 
 local function rd(p) local f = io.open(p, 'r'); if not f then return nil end; local v = f:read('*l'); f:close(); return v end
-local hw, scanned = {}, -1000
+local hw, HWL, scanned = {}, {}, -1000
 local FANS, IF = {}, 'lo'
 local function exists(p) local f = io.open(p, 'r'); if f then f:close(); return true end return false end
 local function scan(n)
   if n - scanned < 60 then return end
-  scanned = n; hw = {}; FANS = {}
+  scanned = n; hw = {}; HWL = {}; FANS = {}
   for i = 0, 63 do
     local d = '/sys/class/hwmon/hwmon' .. i; local nm = rd(d .. '/name')
     if nm then
       if not hw[nm] then hw[nm] = d end
+      HWL[nm] = HWL[nm] or {}; HWL[nm][#HWL[nm] + 1] = d
       for k = 1, 16 do local fp = d .. '/fan' .. k .. '_input'; if exists(fp) then FANS[#FANS + 1] = fp end end
     end
   end
@@ -32,9 +33,16 @@ local function labeled_in(d, wants)
     if l then for _, w in ipairs(wants) do if l:find(w, 1, true) then return tval(d, i) end end end
   end
 end
-local function cpu_temp()
-  local d = hw.k10temp or hw.coretemp or hw.zenpower or hw.cpu_thermal
-  return labeled_in(d, { 'Package', 'Tctl', 'Tdie' }) or tval(d, 1)
+local function cpu_temps()   -- one reading per CPU package, in hwmon order (the same order as the sockets)
+  for _, nm in ipairs({ 'k10temp', 'coretemp', 'zenpower', 'cpu_thermal' }) do
+    local out = {}
+    for _, d in ipairs(HWL[nm] or {}) do
+      local v = labeled_in(d, { 'Package', 'Tctl', 'Tdie' }) or tval(d, 1)
+      if v then out[#out + 1] = v end
+    end
+    if #out > 0 then return out end
+  end
+  return {}
 end
 local function board_temp()
   for nm, d in pairs(hw) do
@@ -53,40 +61,129 @@ local HOST_OS = (function()
   if f then for l in f:lines() do n = l:match('^NAME="?([^"]+)"?') or n; v = l:match('^VERSION_ID="?([^"]+)"?') or v end; f:close() end
   return ((n:gsub(' Linux', '')) .. ' ' .. v):gsub('%s+$', '')
 end)()
+-- CPU sockets: logical CPU number -> socket index (1..N), from the "physical id" lines of /proc/cpuinfo
+local function parse_topology(lines)
+  local cur, names, order, seen, sock_of, count = nil, {}, {}, {}, {}, 0
+  local model
+  for l in lines do
+    local p = l:match('^processor%s*:%s*(%d+)')
+    if p then cur = tonumber(p); count = count + 1 end
+    local m = l:match('^model name%s*:%s*(.+)'); if m then model = model or m end
+    local id = l:match('^physical id%s*:%s*(%d+)')
+    if id and cur then
+      id = tonumber(id)
+      if not seen[id] then seen[id] = true; order[#order + 1] = id end
+      sock_of[cur] = id
+    end
+  end
+  table.sort(order)
+  local idx = {}; for i, id in ipairs(order) do idx[id] = i end
+  local map, per = {}, {}
+  for c, id in pairs(sock_of) do map[c] = idx[id]; per[idx[id]] = (per[idx[id]] or 0) + 1 end
+  if #order == 0 then order = { 0 }; per = { count } end
+  return { model = model, threads = count, sockets = #order, map = map, per = per }
+end
+local function cpuinfo_lines()
+  local f = io.open('/proc/cpuinfo', 'r'); if not f then return function() return nil end end
+  local all = {}; for l in f:lines() do all[#all + 1] = l end; f:close()
+  local i = 0; return function() i = i + 1; return all[i] end
+end
+local TOPO = parse_topology(cpuinfo_lines())
 local CPU_NAME, THREADS = (function()
-  local name, n = nil, 0
-  local f = io.open('/proc/cpuinfo', 'r')
-  if f then for l in f:lines() do local m = l:match('^model name%s*:%s*(.+)'); if m then name = name or m; n = n + 1 end end; f:close() end
+  local name, n = TOPO.model, TOPO.threads
   name = (name or 'CPU'):gsub('%(R%)', ''):gsub('%(TM%)', ''):gsub(' Processor', ''):gsub(' CPU', ''):gsub('%s+@.*', ''):gsub('^AMD ', ''):gsub('^Intel ', ''):gsub('Ryzen ', ''):gsub('%s+%d+%-Cores?', ''):gsub('%s+', ' ')
   return name, n
 end)()
-local GPU_NAME = (function() local s = sh('nvidia-smi --query-gpu=name --format=csv,noheader'); return s and s:gsub('NVIDIA ', ''):gsub('GeForce ', '') end)()
+local function grouped(names)   -- {"B200","B200"} -> "2x B200"; mixed cards are joined with " + "
+  local order, n = {}, {}
+  for _, x in ipairs(names) do if not n[x] then n[x] = 0; order[#order + 1] = x end; n[x] = n[x] + 1 end
+  local out = {}
+  for _, x in ipairs(order) do out[#out + 1] = (n[x] > 1 and (n[x] .. 'x ') or '') .. x end
+  return #out > 0 and table.concat(out, ' + ') or nil
+end
+local GPU_NAME = (function()
+  local p = io.popen('nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null'); if not p then return nil end
+  local names = {}; for l in p:lines() do l = l:gsub('NVIDIA ', ''):gsub('GeForce ', ''):gsub('%s+$', ''); if l ~= '' then names[#names + 1] = l end end; p:close()
+  return grouped(names)
+end)()
 local HAS_DNF = os.execute('command -v dnf >/dev/null 2>&1') == true or os.execute('command -v dnf >/dev/null 2>&1') == 0
 local HAS_NVME = exists('/sys/class/nvme/nvme0/model')
 local RUN = os.getenv('XDG_RUNTIME_DIR') or '/tmp'
 local UPD = RUN .. '/polaris-upd'
 
-local gpu, gpu_t = nil, 0
+local function parse_gpus(lines)   -- "index, util, temp, mem used, mem total, power, limit" per line; "[N/A]" fields become nil
+  local list = {}
+  for s in lines do
+    local f, k = {}, 0; for x in (s .. ','):gmatch('%s*([^,]*),') do k = k + 1; f[k] = tonumber(x) end   -- by position: a nil field must not shift the next ones
+    if f[1] and f[2] then list[#list + 1] = { idx = f[1], util = f[2], temp = f[3], used = f[4], total = f[5], watts = f[6], limit = f[7] } end
+  end
+  return list
+end
+local gpus, gpu_t = {}, 0
 local function gpu_info()
   if os.time() - gpu_t >= 6 then
     gpu_t = os.time()
-    local p = io.popen('nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit --format=csv,noheader,nounits 2>/dev/null')
-    local s = p and p:read('*l'); if p then p:close() end
-    if s then local a, b, c, d, e, f = s:match('(%d+),%s*(%d+),%s*(%d+),%s*(%d+),%s*([%d%.]+),%s*([%d%.]+)'); if a then gpu = { util = tonumber(a), temp = tonumber(b), used = tonumber(c), total = tonumber(d), watts = tonumber(e), limit = tonumber(f) } end end
+    local p = io.popen('nvidia-smi --query-gpu=index,utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit --format=csv,noheader,nounits 2>/dev/null')
+    if p then
+      local list = parse_gpus(p:lines()); p:close()
+      if #list > 0 then gpus = list end
+    end
   end
-  return gpu
+  return gpus
 end
 
-local RAPL = { e = nil, t = nil, w = nil, wh = 0 }
+-- CPU load per socket, from the change in /proc/stat between two frames
+local STAT = { prev = nil, use = {} }
+local function socket_use()
+  local f = io.open('/proc/stat', 'r'); if not f then return STAT.use end
+  local cur = {}
+  for l in f:lines() do
+    local c, rest = l:match('^cpu(%d+)%s+(.*)')
+    if c then
+      local v = {}; for x in rest:gmatch('%d+') do v[#v + 1] = tonumber(x) end
+      local total = 0; for k = 1, math.min(#v, 8) do total = total + v[k] end
+      local idle = (v[4] or 0) + (v[5] or 0)
+      local sk = TOPO.map[tonumber(c)] or 1
+      cur[sk] = cur[sk] or { 0, 0 }; cur[sk][1] = cur[sk][1] + total; cur[sk][2] = cur[sk][2] + idle
+    end
+  end
+  f:close()
+  if STAT.prev then
+    for sk, v in pairs(cur) do
+      local p = STAT.prev[sk]
+      if p and v[1] > p[1] then STAT.use[sk] = 100 * (1 - (v[2] - p[2]) / (v[1] - p[1])) end
+    end
+  end
+  STAT.prev = cur
+  return STAT.use
+end
+
+-- CPU power: one RAPL package per socket (intel-rapl:0, intel-rapl:1 ...), summed for the total
+local RAPL = { pk = {}, wh = 0, w = nil, t = nil, list = nil }
 local function cpu_power()
-  local e = tonumber(rd('/sys/class/powercap/intel-rapl:0/energy_uj')); if not e then return nil end
+  if not RAPL.list then
+    RAPL.list = {}
+    for i = 0, 15 do
+      local d = '/sys/class/powercap/intel-rapl:' .. i
+      if (rd(d .. '/name') or ''):match('^package') then RAPL.list[#RAPL.list + 1] = d end
+    end
+  end
+  if #RAPL.list == 0 then return nil end
   local t = os.time()
-  if RAPL.e and t - RAPL.t >= 1 then
-    local d = e - RAPL.e; if d < 0 then d = d + (tonumber(rd('/sys/class/powercap/intel-rapl:0/max_energy_range_uj')) or 0) end
-    local dt = t - RAPL.t; RAPL.w = d / 1e6 / dt; RAPL.wh = RAPL.wh + (d / 1e6) / 3600
-    RAPL.e, RAPL.t = e, t
-  elseif not RAPL.e then RAPL.e, RAPL.t = e, t end
-  return RAPL.w
+  if RAPL.t and t - RAPL.t < 1 then return RAPL.w, RAPL.ws end
+  local ws, total = {}, 0
+  for i, d in ipairs(RAPL.list) do
+    local e = tonumber(rd(d .. '/energy_uj'))
+    local pk = RAPL.pk[i]
+    if e and pk and RAPL.t then
+      local dj = e - pk; if dj < 0 then dj = dj + (tonumber(rd(d .. '/max_energy_range_uj')) or 0) end
+      ws[i] = dj / 1e6 / (t - RAPL.t); total = total + ws[i]; RAPL.wh = RAPL.wh + (dj / 1e6) / 3600
+    end
+    RAPL.pk[i] = e
+  end
+  if RAPL.t then RAPL.w, RAPL.ws = total, ws end
+  RAPL.t = t
+  return RAPL.w, RAPL.ws
 end
 
 local SYS = { t = 0, ft = 0, upd = nil, sec = nil, kern = nil, failed = 0, failed_names = '' }
@@ -204,13 +301,22 @@ function conky_main()
   end
   local function kib(v) if v >= 1024 then return string.format('%.1f MiB/s', v / 1024) end return string.format('%d KiB/s', math.floor(v + 0.5)) end
 
-  local g = gpu_info()
+  local G = gpu_info(); local NG = #G
+  local NS = TOPO.sockets; local su = socket_use()
   local cpu = num(P('${cpu}')); local ram = num(P('${memperc}')); local disk = num(P('${fs_used_perc /}'))
-  local cpuT, gpuT, boardT, nvmeT, nicT = cpu_temp(), g and g.temp, board_temp(), temp('nvme', 1), nic_temp()
+  local cts = cpu_temps(); local cpuT, cpuTi
+  for i, v in ipairs(cts) do if not cpuT or v > cpuT then cpuT, cpuTi = v, i end end   -- the hottest package drives the score
+  local gpuT, gpuTi
+  for _, x in ipairs(G) do if x.temp and (not gpuT or x.temp > gpuT) then gpuT, gpuTi = x.temp, x.idx end end   -- the hottest card
+  local cpuLbl = #cts > 1 and ('CPU ' .. (cpuTi - 1)) or 'CPU'
+  local gpuLbl = NG > 1 and ('GPU ' .. (gpuTi or 0)) or 'GPU'
+  local boardT, nvmeT, nicT = board_temp(), temp('nvme', 1), nic_temp()
   local temps = {}
-  for _, t in ipairs({ { 'CPU', cpuT, TW - 5, TH }, { 'GPU', gpuT, TW - 5, TH }, { 'Board', boardT, 50, 65 }, { 'NVMe', nvmeT, NW - 15, NW }, { 'Network chip', nicT, TW - 5, TH } }) do
-    if t[2] then temps[#temps + 1] = t end
-  end
+  local function addt(label, v, lo, hi) if v then temps[#temps + 1] = { label, v, lo, hi } end end
+  for i, v in ipairs(cts) do addt(#cts > 1 and ('CPU ' .. (i - 1)) or 'CPU', v, TW - 5, TH) end
+  if NG <= 8 then for _, x in ipairs(G) do addt(NG > 1 and ('GPU ' .. x.idx) or 'GPU', x.temp, TW - 5, TH) end
+  else addt('GPU hottest of ' .. NG, gpuT, TW - 5, TH) end
+  addt('Board', boardT, 50, 65); addt('NVMe', nvmeT, NW - 15, NW); addt('Network chip', nicT, TW - 5, TH)
   local fmin, fmax, stopped, fsum, fn = nil, nil, nil, 0, 0
   for i = 1, #FANS do local f = fan(i); if f then fmin = math.min(fmin or f, f); fmax = math.max(fmax or f, f); fsum = fsum + f; fn = fn + 1; if f == 0 then stopped = i end end end
   peaks.cpu = math.max(peaks.cpu, cpuT or 0); peaks.gpu = math.max(peaks.gpu, gpuT or 0); peaks.nvme = math.max(peaks.nvme, nvmeT or 0)
@@ -230,8 +336,8 @@ function conky_main()
   local score = 100
   local function flag(l, m) score = math.max(0, score - (l == 2 and 25 or 10)); if l > level then level, msg = l, m end end
   if stopped then flag(2, 'Fan ' .. stopped .. ' has stopped') end
-  if cpuT and cpuT >= TH then flag(2, 'CPU is hot at ' .. round(deg(cpuT)) .. '°') elseif cpuT and cpuT >= TW then flag(1, 'CPU is running warm at ' .. round(deg(cpuT)) .. '°') end
-  if gpuT and gpuT >= TH then flag(2, 'GPU is hot at ' .. round(deg(gpuT)) .. '°') elseif gpuT and gpuT >= TW then flag(1, 'GPU is running warm at ' .. round(deg(gpuT)) .. '°') end
+  if cpuT and cpuT >= TH then flag(2, cpuLbl .. ' is hot at ' .. round(deg(cpuT)) .. '°') elseif cpuT and cpuT >= TW then flag(1, cpuLbl .. ' is running warm at ' .. round(deg(cpuT)) .. '°') end
+  if gpuT and gpuT >= TH then flag(2, gpuLbl .. ' is hot at ' .. round(deg(gpuT)) .. '°') elseif gpuT and gpuT >= TW then flag(1, gpuLbl .. ' is running warm at ' .. round(deg(gpuT)) .. '°') end
   if nvmeT and nvmeT >= NW then flag(1, 'NVMe is warm at ' .. round(deg(nvmeT)) .. '°') end
   if disk >= DH then flag(2, 'Disk is almost full (' .. round(disk) .. '%)') elseif disk >= DW then flag(1, 'Disk is ' .. round(disk) .. '% full') end
   if ram >= RH then flag(2, 'Memory is nearly full') elseif ram >= RW then flag(1, 'Memory use is high') end
@@ -277,13 +383,35 @@ function conky_main()
 
   sec('USAGE', BLUE)
   row('CPU', string.format('%.1f%%  ·  %.1f GHz', cpu, num(P('${freq_g 1}'))), BLUE)
-  if g then row('GPU', string.format('%d%%  ·  %.1f / %.0f GB', g.util, g.used / 1024, g.total / 1024), BLUE) end
+  if NS > 1 then
+    for k = 1, NS do row('CPU ' .. (k - 1), string.format('%.1f%%  ·  %d threads', su[k] or 0, TOPO.per[k] or 0), BLUE) end
+  end
+  local function gmem(x) return x.used and x.total and string.format('%.1f / %.0f GB', x.used / 1024, x.total / 1024) or '-' end
+  if NG == 1 then
+    row('GPU', string.format('%d%%  ·  %s', G[1].util, gmem(G[1])), BLUE)
+  elseif NG > 1 and NG <= 8 then
+    for _, x in ipairs(G) do row('GPU ' .. x.idx, string.format('%d%%  ·  %s', x.util, gmem(x)), BLUE) end
+  elseif NG > 8 then   -- too many cards for one row each: show the average load, the memory in use and the busiest card
+    local us, mu, mt, top = 0, 0, 0, G[1]
+    for _, x in ipairs(G) do us = us + x.util; mu = mu + (x.used or 0); mt = mt + (x.total or 0); if x.util > top.util then top = x end end
+    row('GPUs ×' .. NG, string.format('%d%% avg  ·  %.0f / %.0f GB', us / NG, mu / 1024, mt / 1024), BLUE)
+    row('Busiest GPU', string.format('GPU %d  ·  %d%%', top.idx, top.util), BLUE)
+  end
   row('Memory', P('${mem}') .. ' / ' .. P('${memmax}') .. '  ·  ' .. round(ram) .. '%', BLUE)
-  local cw = cpu_power(); local gw = g and g.watts
+  local cw, cws = cpu_power()
+  local gw, glim = 0, 0
+  for _, x in ipairs(G) do gw = gw + (x.watts or 0); glim = glim + (x.limit or 0) end
+  if gw == 0 then gw = nil end
   if (cw or gw) and CFG.show_power == 1 then
     sec('POWER', AMB)
-    if cw then row('CPU', string.format('%.0f W', cw), AMB) end
-    if gw then row('GPU', string.format('%.0f W  /  %.0f W max', gw, g.limit), AMB) end
+    if cw then
+      if cws and #cws > 1 then for k = 1, #cws do row('CPU ' .. (k - 1), string.format('%.0f W', cws[k] or 0), AMB) end end
+      row(cws and #cws > 1 and 'CPU total' or 'CPU', string.format('%.0f W', cw), AMB)
+    end
+    if gw then
+      if NG > 1 and NG <= 4 then for _, x in ipairs(G) do if x.watts then row('GPU ' .. x.idx, string.format('%.0f W  /  %.0f W max', x.watts, x.limit or 0), AMB) end end end
+      row(NG > 1 and 'GPU total' or 'GPU', string.format('%.0f W  /  %.0f W max', gw, glim), AMB)
+    end
     if cw and gw then row('CPU + GPU', string.format('%.0f W', cw + gw), AMB, { 1, 1, 1, 1 }) end
     if cw then row('CPU energy', string.format('%.2f Wh since start', RAPL.wh + 0), AMB) end
   end
@@ -357,10 +485,10 @@ function conky_main()
   row('Busiest', procs('top'), PINK)
   row('Top memory', procs('top_mem'), PINK)
   row('CPU Trend', trend, PINK)
-  row('Peak temps', 'CPU ' .. round(deg(peaks.cpu)) .. '°' .. (g and ('  GPU ' .. round(deg(peaks.gpu)) .. '°') or ''), PINK)
+  row('Peak temps', 'CPU ' .. round(deg(peaks.cpu)) .. '°' .. (NG > 0 and ('  GPU ' .. round(deg(peaks.gpu)) .. '°') or ''), PINK)
   end
   y = y + 6
-  text(cr, CPU_NAME .. '  ·  ' .. THREADS .. ' threads' .. (GPU_NAME and ('  ·  ' .. GPU_NAME) or ''), W / 2, y, 9.5, false, 'center', MUTED)
+  text(cr, (NS > 1 and (NS .. 'x ') or '') .. CPU_NAME .. '  ·  ' .. THREADS .. ' threads' .. (GPU_NAME and ('  ·  ' .. GPU_NAME) or ''), W / 2, y, 9.5, false, 'center', MUTED)
 
   local need = math.ceil(y + 24)
   if math.abs(need - (LASTH or 0)) > 4 then
