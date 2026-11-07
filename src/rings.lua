@@ -488,7 +488,7 @@ function conky_main()
   row('Peak temps', 'CPU ' .. round(deg(peaks.cpu)) .. '°' .. (NG > 0 and ('  GPU ' .. round(deg(peaks.gpu)) .. '°') or ''), PINK)
   end
   y = y + 6
-  text(cr, (NS > 1 and (NS .. 'x ') or '') .. CPU_NAME .. '  ·  ' .. THREADS .. ' threads' .. (GPU_NAME and ('  ·  ' .. GPU_NAME) or ''), W / 2, y, 9.5, false, 'center', MUTED)
+  text(cr, CPU_NAME, W / 2, y, 9.5, false, 'center', MUTED)   -- footer: just the CPU name
 
   local need = math.ceil(y + 24)
   if math.abs(need - (LASTH or 0)) > 4 then
