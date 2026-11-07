@@ -40,5 +40,12 @@ eq(#pg(it({ '0, 12, [N/A], [N/A], [N/A], [N/A], [N/A]' })), 1, 'laptop gpu with 
 eq(gr({ 'B200', 'B200', 'B200' }), '3x B200', 'same cards grouped')
 eq(gr({ 'A100', 'H100' }), 'A100 + H100', 'mixed cards')
 eq(gr({}), nil, 'none')
+
+-- Lua 5.4 (conky 1.24) refuses to compile a file that assigns to a for-loop variable; LuaJIT accepts it, so look for it by pattern
+local pat = 'for%s+(%a[%w_]*)%s+in%s[^\n]-%sdo%s+%1%s*=[^=]'
+local old = "for l in p:lines() do l = l:gsub('x', '')"
+eq(old:find(pat) ~= nil, true, 'the check recognises the bug')
+local n = 0; for line in io.lines('src/rings.lua') do if line:find(pat) then n = n + 1; print('assigns to a loop variable: ' .. line:sub(1, 90)) end end
+eq(n, 0, 'no for-loop variable is assigned in rings.lua')
 print(fails == 0 and 'all passed' or (fails .. ' failed'))
 os.exit(fails == 0 and 0 or 1)
