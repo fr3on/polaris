@@ -396,7 +396,7 @@ function conky_main()
   elseif NG > 8 then   -- too many cards for one row each: show the average load, the memory in use and the busiest card
     local us, mu, mt, top = 0, 0, 0, G[1]
     for _, x in ipairs(G) do us = us + x.util; mu = mu + (x.used or 0); mt = mt + (x.total or 0); if x.util > top.util then top = x end end
-    row('GPUs ×' .. NG, string.format('%d%% avg  ·  %.0f / %.0f GB', us / NG, mu / 1024, mt / 1024), BLUE)
+    row('GPUs ×' .. NG, string.format('%d%% avg  ·  %.0f / %.0f GB', round(us / NG), mu / 1024, mt / 1024), BLUE)   -- %d needs a whole number in Lua 5.4
     row('Busiest GPU', string.format('GPU %d  ·  %d%%', top.idx, top.util), BLUE)
   end
   row('Memory', P('${mem}') .. ' / ' .. P('${memmax}') .. '  ·  ' .. round(ram) .. '%', BLUE)

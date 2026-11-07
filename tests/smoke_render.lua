@@ -1,5 +1,17 @@
 -- Run: luajit tests/smoke_render.lua [gpus] [sockets]   draws one frame of the widget with stubbed cairo/conky over fake hardware, and prints the rows it drew
 local NGPU, NSOCK = tonumber(arg[1]) or 8, tonumber(arg[2]) or 2
+-- Lua 5.3/5.4 (conky 1.24) raises an error for string.format('%d', 93.5); LuaJIT silently truncates. Make this run as strict as 5.4.
+local real_format = string.format
+string.format = function(fmt, ...)
+  local args, i = { ... }, 0
+  for spec in fmt:gsub('%%%%', ''):gmatch('%%[%-%+ #0]*%d*%.?%d*([%a])') do
+    i = i + 1
+    if (spec == 'd' or spec == 'i') and type(args[i]) == 'number' and math.floor(args[i]) ~= args[i] then
+      error("bad argument #" .. (i + 1) .. " to 'format' (number has no integer representation): " .. fmt, 2)
+    end
+  end
+  return real_format(fmt, ...)
+end
 package.preload.cairo = function() end
 package.preload.cairo_xlib = function() end
 local drawn = {}
