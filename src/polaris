@@ -69,7 +69,7 @@ def saved():
     try: a, b = open(POS).read().split(); return int(a), int(b)
     except Exception: return None
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 EFF = HOME + '/.config/polaris/effective_scale'; HFILE = HOME + '/.config/polaris/height'; SCALEF = HOME + '/.config/polaris/scale'
 
 def screen_geom(pos):

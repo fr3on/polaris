@@ -32,7 +32,7 @@ files = [
         'License: MIT\n' + ''.join(' ' + (l if l.strip() else '.') + '\n' for l in read(f'{ROOT}/LICENSE', 'r').splitlines()[2:])
     ).encode(), 0o644),
     ('usr/share/doc/%s/changelog.gz' % NAME, gzip.compress((
-        f'{NAME} ({VERSION}-{REV}) unstable; urgency=low\n\n  * First release.\n\n'
+        f'{NAME} ({VERSION}-{REV}) unstable; urgency=low\n\n  * See https://github.com/fr3on/polaris/releases for what changed.\n\n'
         ' -- fr3on <ahmed@0x200.com>  ' + time.strftime('%a, %d %b %Y %H:%M:%S +0000', time.gmtime(NOW)) + '\n').encode(), mtime=0), 0o644),
 ]
 dirs = sorted({os.path.dirname('/'.join(p.split('/')[:i])) for p, _, _ in files for i in range(1, len(p.split('/')))} | {'etc', 'etc/xdg', 'etc/xdg/autostart'})

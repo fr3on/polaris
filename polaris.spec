@@ -1,5 +1,5 @@
 Name:           polaris
-Version:        1.0.0
+Version:        1.1.0
 Release:        1%{?dist}
 Summary:        Transparent desktop widget that shows your Linux machine's health in plain words
 License:        MIT
@@ -74,5 +74,11 @@ systemctl enable --now polaris-smart.timer >/dev/null 2>&1 || :
 %config(noreplace) %{_sysconfdir}/xdg/autostart/polaris.desktop
 
 %changelog
+* Sat Nov 07 2026 fr3on <ahmed@0x200.com> - 1.1.0-1
+- Several GPUs and CPU sockets: one row per card and per socket, the hottest part drives the score
+- Fixes: Lua 5.4 compile error and GPU average row, /tmp symlink risk, hung nvidia-smi, damaged settings values, Reload button, installer cache refresh
+- Settings window no longer installs root-run files from a folder the user can write to
+- GitHub Actions CI and release builds
+
 * Thu Nov 05 2026 fr3on <ahmed@0x200.com> - 1.0.0-1
 - First release

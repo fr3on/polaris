@@ -48,7 +48,7 @@ sudo dnf install polaris
 Download `polaris-widget_*_all.deb` from the [latest release](https://github.com/fr3on/polaris/releases/latest), then:
 
 ```bash
-sudo apt install ./polaris-widget_1.0.0-1_all.deb     # apt installs the dependencies for you
+sudo apt install ./polaris-widget_1.1.0-1_all.deb     # apt installs the dependencies for you
 ```
 
 The widget works on any current Ubuntu or Debian. The settings window needs libadwaita 1.4 or newer (Ubuntu 24.04 or Debian 13 and later); on older releases the widget still runs and you can change settings in `~/.config/polaris/settings.conf`.
