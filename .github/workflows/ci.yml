@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lua:
+    name: Lua (5.4 and LuaJIT)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lua5.4 luajit
+      - name: Compile with Lua 5.4 (what conky 1.24 uses)
+        # 5.4 refuses things LuaJIT accepts, for example assigning to a for-loop variable
+        run: |
+          luac5.4 -p src/rings.lua src/conky.conf
+          luajit -bl src/rings.lua > /dev/null
+      - name: Parser tests
+        run: |
+          lua5.4 tests/test_multi.lua
+          luajit tests/test_multi.lua
+      - name: Render one frame over fake hardware (GPUs x sockets)
+        run: |
+          for interp in lua5.4 luajit; do
+            for shape in "0 1" "1 1" "2 1" "8 2" "9 1" "12 2"; do
+              echo "== $interp, gpus/sockets: $shape"
+              $interp tests/smoke_render.lua $shape | tail -n 1
+            done
+          done
+
+  python:
+    name: Python and shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Compile the launcher and the settings window
+        run: python -m py_compile src/polaris src/polaris-settings
+      - name: Settings tests (GTK stubbed)
+        run: python tests/test_settings.py
+      - name: Shell scripts
+        run: |
+          sh -n install.sh
+          sh -n build.sh
+          sh -n src/polaris-smart
+          shellcheck -S warning -e SC2086 install.sh build.sh src/polaris-smart
+
+  packages:
+    name: Build the packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Debian package
+        run: |
+          python3 packaging/deb/build-deb.py
+          dpkg-deb --info out/polaris-widget_*_all.deb
+          dpkg-deb --contents out/polaris-widget_*_all.deb | grep -E "usr/share/polaris/rings.lua|usr/bin/polaris$"
+      - name: Install dry run on Debian
+        run: sudo DRYRUN=1 NODEPS=1 ./install.sh | tail -n 5
+
+  rpm:
+    name: RPM (Fedora)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - name: Tools
+        run: dnf install -y -q rpm-build systemd-rpm-macros tar gzip git
+      - uses: actions/checkout@v4
+      - run: ./build.sh
+      - run: rpm -qlp out/polaris-*.noarch.rpm | grep -E "/usr/share/polaris/rings.lua|/usr/bin/polaris$"

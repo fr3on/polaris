@@ -1,0 +1,62 @@
+name: Release
+
+# Push a tag such as v1.1.0 (it must match Version: in polaris.spec) and this builds
+# the .deb and the .rpm and attaches them to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match the version in the spec
+        run: |
+          spec=$(awk '/^Version:/{print $2}' polaris.spec)
+          tag="${GITHUB_REF_NAME#v}"
+          [ "$spec" = "$tag" ] || { echo "tag $GITHUB_REF_NAME does not match polaris.spec Version $spec"; exit 1; }
+
+  deb:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 packaging/deb/build-deb.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: out/*.deb
+
+  rpm:
+    needs: check
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - run: dnf install -y -q rpm-build systemd-rpm-macros tar gzip git
+      - uses: actions/checkout@v4
+      - run: ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: out/*.rpm
+
+  publish:
+    needs: [deb, rpm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Polaris ${GITHUB_REF_NAME#v}" --generate-notes
